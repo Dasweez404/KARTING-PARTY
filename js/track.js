@@ -1,21 +1,8 @@
 import * as THREE from 'three';
 import { THEMES } from './data.js';
-import { buildCenterline, OFFROAD } from './shape.js';
+import { buildNetwork, rng, hashStr } from './shape.js';
 
-// Petit générateur pseudo-aléatoire déterministe (pour que chaque circuit ait toujours le même décor).
-export function rng(seed) {
-  let s = seed >>> 0 || 1;
-  return () => {
-    s ^= s << 13; s >>>= 0; s ^= s >> 17; s ^= s << 5; s >>>= 0;
-    return s / 4294967296;
-  };
-}
-
-function hashStr(str) {
-  let h = 2166136261;
-  for (let i = 0; i < str.length; i++) { h ^= str.charCodeAt(i); h = Math.imul(h, 16777619); }
-  return h >>> 0;
-}
+export { rng };
 
 function canvasTex(w, h, draw, repeat = true) {
   const c = document.createElement('canvas');
@@ -28,9 +15,9 @@ function canvasTex(w, h, draw, repeat = true) {
   return t;
 }
 
-function roadTexture(rainbow) {
+function roadTexture(lines) {
   return canvasTex(128, 256, (g, w, h) => {
-    g.fillStyle = rainbow ? '#ffffff' : '#ffffff';
+    g.fillStyle = '#ffffff';
     g.fillRect(0, 0, w, h);
     const r = rng(42);
     for (let i = 0; i < 1800; i++) {
@@ -38,6 +25,7 @@ function roadTexture(rainbow) {
       g.fillStyle = `rgb(${v},${v},${v})`;
       g.fillRect(r() * w, r() * h, 2, 2);
     }
+    if (!lines) return;
     g.fillStyle = 'rgba(255,255,255,0.95)';
     g.fillRect(4, 0, 4, h); g.fillRect(w - 8, 0, 4, h);
     g.fillStyle = 'rgba(255,255,255,0.8)';
@@ -90,72 +78,177 @@ export class Track {
     this.id = id;
     this.def = def;
     this.theme = THEMES[def.theme];
-    const cl = buildCenterline(def);
-    Object.assign(this, cl);
-    this.half = def.width / 2;
-    this.wallDist = this.half + OFFROAD;
+    const net = buildNetwork(def, id);
+    this.main = net.main;
+    this.branches = net.branches;
+    this.paths = net.paths;
+    this.paths.forEach((p, i) => { p.id = i; });
+    // raccourcis vers la boucle principale (compatibilité)
+    const m = this.main;
+    this.pts = m.pts; this.normals = m.normals; this.tangents = m.tangents; this.curvature = m.curvature;
+    this.n = m.n; this.spacing = m.spacing; this.length = m.length;
+    this.half = m.half; this.wallDist = m.wallDist;
     this.group = new THREE.Group();
     this.rand = rng(hashStr(id));
     let maxR = 0;
-    for (const p of this.pts) maxR = Math.max(maxR, Math.hypot(p.x, p.z));
+    for (const p of this.paths) for (const q of p.pts) maxR = Math.max(maxR, Math.hypot(q.x, q.z));
     this.extent = maxR;
     this.itemBoxes = [];
     this.boostPads = [];
-    this.animated = [];
     this.build();
   }
 
   // ---------- requêtes géométriques ----------
-  nearest(x, z, hint) {
-    const n = this.n;
-    let best = -1, bestD = Infinity;
-    if (hint === undefined || hint < 0) {
+  wrap(i) { return ((i % this.n) + this.n) % this.n; }
+
+  clampI(path, i) {
+    i = Math.round(i);
+    return path.closed ? ((i % path.n) + path.n) % path.n : Math.max(0, Math.min(path.n - 1, i));
+  }
+
+  // Point le plus proche sur un chemin : indice, décalage latéral et position le long du segment
+  nearestOn(path, x, z, hint) {
+    const n = path.n;
+    let best = 0, bestD = Infinity;
+    if (hint === undefined || hint < 0 || !path.closed) {
       for (let i = 0; i < n; i++) {
-        const p = this.pts[i];
+        const p = path.pts[i];
         const d = (p.x - x) ** 2 + (p.z - z) ** 2;
         if (d < bestD) { bestD = d; best = i; }
       }
     } else {
       for (let k = -25; k <= 25; k++) {
         const i = (hint + k + n) % n;
-        const p = this.pts[i];
+        const p = path.pts[i];
         const d = (p.x - x) ** 2 + (p.z - z) ** 2;
         if (d < bestD) { bestD = d; best = i; }
       }
     }
-    const p = this.pts[best], nm = this.normals[best];
-    const lateral = (x - p.x) * nm.x + (z - p.z) * nm.z;
-    return { idx: best, lateral };
+    const p = path.pts[best], nm = path.normals[best], tg = path.tangents[best];
+    const dx = x - p.x, dz = z - p.z;
+    return { i: best, lateral: dx * nm.x + dz * nm.z, along: dx * tg.x + dz * tg.z };
   }
 
-  pointAt(idx, lateral = 0) {
-    const i = ((Math.round(idx) % this.n) + this.n) % this.n;
-    const p = this.pts[i], nm = this.normals[i];
-    return { x: p.x + nm.x * lateral, z: p.z + nm.z * lateral };
+  heightAt(path, i, along = 0) {
+    const n = path.n;
+    i = this.clampI(path, i);
+    const h0 = path.heights[i];
+    const j = along >= 0 ? i + 1 : i - 1;
+    if (!path.closed && (j < 0 || j >= n)) return h0;
+    const h1 = path.heights[(j + n) % n];
+    return h0 + (h1 - h0) * Math.min(1, Math.abs(along) / path.spacing);
   }
 
-  headingAt(idx) {
-    const i = ((Math.round(idx) % this.n) + this.n) % this.n;
-    const t = this.tangents[i];
+  // Le point (x, z, y) est-il dans le couloir (entre les murs) d'un chemin ?
+  insideInfo(path, x, z, y, hint) {
+    const r = this.nearestOn(path, x, z, hint);
+    if (!path.closed && ((r.i === 0 && r.along < -0.5) || (r.i === path.n - 1 && r.along > 0.5))) return null;
+    const h = this.heightAt(path, r.i, r.along);
+    if (y !== undefined && Math.abs(y - h) > 4.5) return null;
+    r.ground = h;
+    return r;
+  }
+
+  mainIdxOf(path, i) {
+    if (path === this.main) return i;
+    return this.wrap(path.startIdx + (i / (path.n - 1)) * path.span);
+  }
+
+  // Localise un kart dans le réseau. "prev" sert d'indice de départ et donne une préférence au chemin courant.
+  locate(x, z, y, prev) {
+    let best = null, bestScore = Infinity;
+    for (const path of this.paths) {
+      const hint = path === this.main && prev ? Math.round(prev.mainIdx) : undefined;
+      const r = this.insideInfo(path, x, z, y, hint);
+      if (!r) continue;
+      const inside = Math.abs(r.lateral) <= path.wallDist - 0.9;
+      let score = Math.abs(r.lateral) / path.wallDist;
+      if (!inside) score += 10 + Math.abs(r.lateral);
+      if (prev && prev.path === path && inside) score -= 5;
+      if (score < bestScore) { bestScore = score; best = { path, i: r.i, lateral: r.lateral, along: r.along, ground: r.ground, inside }; }
+    }
+    if (!best) {
+      const path = prev ? prev.path : this.main;
+      const r = this.nearestOn(path, x, z, path === this.main && prev ? Math.round(prev.mainIdx) : undefined);
+      best = { path, i: r.i, lateral: r.lateral, along: r.along, ground: this.heightAt(path, r.i, r.along), inside: false };
+    }
+    best.mainIdx = this.mainIdxOf(best.path, best.i);
+    return best;
+  }
+
+  // Avance de "steps" échantillons le long du réseau ; choose(branch) décide si on prend un embranchement.
+  advance(path, i, steps, choose) {
+    if (path !== this.main) {
+      const j = i + steps;
+      if (j <= path.n - 1) return { path, i: j };
+      return this.advance(this.main, path.endIdx, j - (path.n - 1), choose);
+    }
+    const target = i + steps;
+    if (choose) {
+      for (const b of this.branches) {
+        let s = b.startIdx;
+        while (s < i) s += this.n;
+        if (s <= target && choose(b)) return this.advance(b, 0, target - s, choose);
+      }
+    }
+    return { path, i: this.wrap(target) };
+  }
+
+  // Position "virtuelle" sur la route choisie : un kart encore sur la boucle principale mais engagé
+  // dans la zone de séparation d'un embranchement choisi est considéré comme déjà sur l'embranchement.
+  routeLoc(loc, x, z, y, choose) {
+    if (loc.path !== this.main || !choose) return loc;
+    for (const b of this.branches) {
+      const into = this.wrap(Math.round(loc.mainIdx) - b.startIdx);
+      if (into < b.span * 0.6 && choose(b)) {
+        // seulement si le kart est réellement dans le couloir de l'embranchement (sinon il a raté l'entrée)
+        const r = this.insideInfo(b, x, z, y);
+        if (r && Math.abs(r.lateral) < b.wallDist - 1.2) return { path: b, i: r.i, lateral: r.lateral, mainIdx: loc.mainIdx };
+      }
+    }
+    return loc;
+  }
+
+  // Nombre d'échantillons entre a et b s'ils sont sur le même chemin (sinon Infinity)
+  ahead(pathA, iA, pathB, iB) {
+    if (pathA !== pathB) {
+      if (pathA !== this.main && pathB === this.main) {
+        const d = this.wrap(iB - pathA.endIdx);
+        return d < this.n / 2 ? pathA.n - 1 - iA + d : Infinity;
+      }
+      return Infinity;
+    }
+    return pathA.closed ? this.wrap(iB - iA) : iB - iA;
+  }
+
+  pointAt(path, i, lateral = 0) {
+    const k = this.clampI(path, i);
+    const p = path.pts[k], nm = path.normals[k];
+    return { x: p.x + nm.x * lateral, z: p.z + nm.z * lateral, y: path.heights[k] };
+  }
+
+  headingAt(path, i) {
+    const t = path.tangents[this.clampI(path, i)];
     return Math.atan2(t.x, t.z);
   }
 
-  wrap(i) { return ((i % this.n) + this.n) % this.n; }
-
   // ---------- construction de la scène ----------
-  ribbon(offA, offB, y, opts = {}) {
-    const n = this.n;
+  // Ruban le long d'un chemin. yA/yB : hauteur des deux bords ; skip(k) : omettre le quad k→k+1.
+  ribbon(path, offA, offB, opts = {}) {
+    const n = path.n, rows = path.closed ? n + 1 : n;
+    const from = opts.range ? opts.range[0] : 0, to = opts.range ? opts.range[1] : rows - 1;
     const pos = [], uv = [], col = [], idx = [];
-    for (let i = 0; i <= n; i++) {
-      const k = i % n, p = this.pts[k], nm = this.normals[k];
-      const yA = opts.vertical ? opts.y0 : y, yB = opts.vertical ? opts.y1 : y;
-      const oA = offA, oB = opts.vertical ? offA : offB;
-      pos.push(p.x + nm.x * oA, yA, p.z + nm.z * oA, p.x + nm.x * oB, yB, p.z + nm.z * oB);
-      const v = (i * this.spacing) / (opts.vScale || 8);
+    const yOff = opts.y ?? 0;
+    for (let r = from; r <= to; r++) {
+      const k = path.closed ? ((r % n) + n) % n : r;
+      const p = path.pts[k], nm = path.normals[k], h = path.heights[k];
+      const yA = opts.yA ? opts.yA(h, k) : h + yOff, yB = opts.yB ? opts.yB(h, k) : h + yOff;
+      pos.push(p.x + nm.x * offA, yA, p.z + nm.z * offA, p.x + nm.x * offB, yB, p.z + nm.z * offB);
+      const v = (r * path.spacing) / (opts.vScale || 8);
       uv.push(0, v, 1, v);
       if (opts.colorFn) { const c = opts.colorFn(k); col.push(c.r, c.g, c.b, c.r, c.g, c.b); }
-      if (i < n) {
-        const a = i * 2;
+      if (r < to && !(opts.skip && opts.skip(k))) {
+        const a = (r - from) * 2;
         idx.push(a, a + 2, a + 1, a + 1, a + 2, a + 3);
       }
     }
@@ -168,9 +261,22 @@ export class Track {
     return g;
   }
 
+  // Le point latéral "off" du segment k→k+1 de "path" est-il dans la zone d'un autre chemin ?
+  overlapsOther(path, k, off, field = 'wallDist', margin = 0.2) {
+    const n = path.n, k2 = path.closed ? (k + 1) % n : Math.min(n - 1, k + 1);
+    const a = path.pts[k], b = path.pts[k2], na = path.normals[k], nb = path.normals[k2];
+    const x = (a.x + b.x) / 2 + ((na.x + nb.x) / 2) * off, z = (a.z + b.z) / 2 + ((na.z + nb.z) / 2) * off;
+    const y = (path.heights[k] + path.heights[k2]) / 2;
+    for (const o of this.paths) {
+      if (o === path) continue;
+      const r = this.insideInfo(o, x, z, y);
+      if (r && Math.abs(r.lateral) < o[field] - margin) return true;
+    }
+    return false;
+  }
+
   build() {
-    const th = this.theme, G = this.group, r = this.rand;
-    const half = this.half;
+    const th = this.theme, G = this.group;
 
     // Sol
     if (!th.noGround) {
@@ -191,45 +297,74 @@ export class Track {
       }
     }
 
-    // Route
     const rainbow = th.road === 'rainbow';
-    const roadMat = new THREE.MeshLambertMaterial({
-      map: roadTexture(rainbow), color: rainbow ? '#ffffff' : th.road, vertexColors: rainbow,
-    });
-    if (rainbow) { roadMat.emissive = new THREE.Color('#222'); }
-    const colorFn = rainbow ? (k) => new THREE.Color().setHSL((k / this.n) * 6 % 1, 0.85, 0.55) : undefined;
-    const road = new THREE.Mesh(this.ribbon(half, -half, 0.08, { colorFn, vScale: 16 }), roadMat);
-    road.receiveShadow = true;
-    G.add(road);
-
-    // Bordures (vibreurs)
+    const roadTex = roadTexture(true), dirtTex = roadTexture(false);
     const curbMat = new THREE.MeshLambertMaterial({ map: stripeTexture(th.walls[0], th.walls[1]) });
-    for (const s of [1, -1]) {
-      const curb = new THREE.Mesh(this.ribbon(s * half, s * (half + 1.4), 0.1, { vScale: 6 }), curbMat);
-      curb.receiveShadow = true;
-      G.add(curb);
-    }
-    // Bas-côtés
     const shMat = new THREE.MeshLambertMaterial({ color: th.shoulder, side: THREE.DoubleSide });
-    for (const s of [1, -1]) {
-      G.add(new THREE.Mesh(this.ribbon(s * (half + 1.4), s * this.wallDist, 0.05), shMat));
-    }
-    // Murs
     const wallTex = stripeTexture(th.walls[0], th.walls[1]);
     const wallMat = new THREE.MeshLambertMaterial({ map: wallTex, side: THREE.DoubleSide });
     if (th.night) { wallMat.emissive = new THREE.Color('#ffffff'); wallMat.emissiveMap = wallTex; wallMat.emissiveIntensity = 0.6; }
-    for (const s of [1, -1]) {
-      const wall = new THREE.Mesh(this.ribbon(s * this.wallDist, 0, 0, { vertical: true, y0: 0, y1: 1.3, vScale: 5 }), wallMat);
-      G.add(wall);
+    const cliffMat = new THREE.MeshLambertMaterial({
+      color: new THREE.Color(th.cliff || th.shoulder).multiplyScalar(th.cliff ? 1 : 0.72), side: THREE.DoubleSide,
+    });
+    const hazard = new THREE.MeshLambertMaterial({ map: stripeTexture('#ffd600', '#212121'), polygonOffset: true, polygonOffsetFactor: -4 });
+
+    for (const path of this.paths) {
+      const isMain = path === this.main;
+      const half = path.half;
+      const curbW = isMain ? 1.4 : 0.8;
+      // Route
+      let roadMat;
+      if (path.kind === 'shortcut') {
+        roadMat = new THREE.MeshLambertMaterial({ map: dirtTex, color: new THREE.Color(th.shoulder).multiplyScalar(0.85) });
+      } else {
+        roadMat = new THREE.MeshLambertMaterial({ map: roadTex, color: rainbow ? '#ffffff' : th.road, vertexColors: rainbow });
+        if (rainbow) roadMat.emissive = new THREE.Color('#222');
+      }
+      if (!isMain) { roadMat.polygonOffset = true; roadMat.polygonOffsetFactor = -2; }
+      const colorFn = rainbow && path.kind !== 'shortcut' ? (k) => new THREE.Color().setHSL(((k * path.spacing) / 200) % 1, 0.85, 0.55) : undefined;
+      const road = new THREE.Mesh(this.ribbon(path, half, -half, { y: 0.08, colorFn, vScale: 16 }), roadMat);
+      road.receiveShadow = true;
+      G.add(road);
+
+      // Vibreurs, bas-côtés, murs, talus
+      for (const s of [1, -1]) {
+        const curb = new THREE.Mesh(this.ribbon(path, s * half, s * (half + curbW), {
+          y: 0.1, vScale: 6, skip: (k) => this.overlapsOther(path, k, s * (half + curbW / 2), 'half', -0.5),
+        }), curbMat);
+        curb.receiveShadow = true;
+        G.add(curb);
+        G.add(new THREE.Mesh(this.ribbon(path, s * (half + curbW), s * path.wallDist, {
+          y: 0.05, skip: isMain ? undefined : (k) => this.overlapsOther(path, k, s * (half + path.wallDist) / 2, 'wallDist', 0),
+        }), shMat));
+        const wallSkip = (k) => this.overlapsOther(path, k, s * path.wallDist);
+        G.add(new THREE.Mesh(this.ribbon(path, s * path.wallDist, s * path.wallDist, {
+          yA: (h) => h, yB: (h) => h + 1.3, vScale: 5, skip: wallSkip,
+        }), wallMat));
+        G.add(new THREE.Mesh(this.ribbon(path, s * path.wallDist, s * path.wallDist, {
+          yA: (h) => (th.noGround ? h - 3 : -0.5), yB: (h) => h + 0.04, skip: wallSkip,
+        }), cliffMat));
+      }
+      // Dessous de la route pour l'espace (route flottante)
+      if (th.noGround) {
+        G.add(new THREE.Mesh(this.ribbon(path, path.wallDist, -path.wallDist, { y: -3 }), cliffMat));
+      }
+      // Tremplins : bandes jaunes et noires
+      for (const rp of path.ramps) {
+        const range = [rp.from, rp.top];
+        if (path.closed || (range[0] >= 0 && range[1] < path.n)) {
+          G.add(new THREE.Mesh(this.ribbon(path, half, -half, { y: 0.12, range, vScale: 3 }), hazard));
+        }
+      }
     }
 
     // Ligne de départ + portique
-    const start = new THREE.Mesh(new THREE.PlaneGeometry(this.def.width, 2.5), new THREE.MeshLambertMaterial({ map: checkerTexture() }));
+    const m = this.main, sp = m.pts[0], h0 = m.heights[0], half = m.half;
+    const start = new THREE.Mesh(new THREE.PlaneGeometry(this.def.width, 2.5), new THREE.MeshLambertMaterial({ map: checkerTexture(), polygonOffset: true, polygonOffsetFactor: -4 }));
     start.material.map.repeat.set(2, 1);
-    const sp = this.pts[0];
     start.rotation.x = -Math.PI / 2;
-    start.rotation.z = this.headingAt(0);
-    start.position.set(sp.x, 0.12, sp.z);
+    start.rotation.z = this.headingAt(m, 0);
+    start.position.set(sp.x, h0 + 0.12, sp.z);
     G.add(start);
     const arch = new THREE.Group();
     const postMat = new THREE.MeshLambertMaterial({ color: '#eeeeee' });
@@ -242,27 +377,30 @@ export class Track {
     banner.material.map.repeat.set(6, 1);
     banner.position.y = 7;
     arch.add(banner);
-    arch.position.set(sp.x, 0, sp.z);
-    arch.rotation.y = this.headingAt(0);
+    arch.position.set(sp.x, h0, sp.z);
+    arch.rotation.y = this.headingAt(m, 0);
     G.add(arch);
 
+    // Panneaux indiquant les embranchements
+    for (const b of this.branches) this.addSign(b);
+
     // Ciel
-    if (th.stars) {
+    const r = this.rand;
+    if (th.stars || th.night) {
       const sg = new THREE.BufferGeometry(), sv = [];
-      for (let i = 0; i < 2500; i++) {
-        const u = r() * Math.PI * 2, v = Math.acos(r() * 2 - 1), R = 1500;
-        sv.push(R * Math.sin(v) * Math.cos(u), R * Math.cos(v) * 0.8, R * Math.sin(v) * Math.sin(u));
+      const count = th.stars ? 2500 : 600;
+      for (let i = 0; i < count; i++) {
+        const R = 1500;
+        if (th.stars) {
+          const u = r() * Math.PI * 2, v = Math.acos(r() * 2 - 1);
+          sv.push(R * Math.sin(v) * Math.cos(u), R * Math.cos(v) * 0.8, R * Math.sin(v) * Math.sin(u));
+        } else {
+          const u = r() * Math.PI * 2, v = r() * 1.2;
+          sv.push(R * Math.cos(v) * Math.cos(u), 200 + R * Math.sin(v), R * Math.cos(v) * Math.sin(u));
+        }
       }
       sg.setAttribute('position', new THREE.Float32BufferAttribute(sv, 3));
-      G.add(new THREE.Points(sg, new THREE.PointsMaterial({ color: '#ffffff', size: 2.2, sizeAttenuation: false, fog: false })));
-    } else if (th.night) {
-      const sg = new THREE.BufferGeometry(), sv = [];
-      for (let i = 0; i < 600; i++) {
-        const u = r() * Math.PI * 2, v = r() * 1.2, R = 1500;
-        sv.push(R * Math.cos(v) * Math.cos(u), 200 + R * Math.sin(v), R * Math.cos(v) * Math.sin(u));
-      }
-      sg.setAttribute('position', new THREE.Float32BufferAttribute(sv, 3));
-      G.add(new THREE.Points(sg, new THREE.PointsMaterial({ color: '#ffffff', size: 1.5, sizeAttenuation: false, fog: false })));
+      G.add(new THREE.Points(sg, new THREE.PointsMaterial({ color: '#ffffff', size: th.stars ? 2.2 : 1.5, sizeAttenuation: false, fog: false })));
     }
 
     this.buildScenery();
@@ -270,14 +408,54 @@ export class Track {
     this.buildBoostPads();
   }
 
+  addSign(b) {
+    const m = this.main;
+    const i = this.wrap(b.startIdx - 12);
+    const side = (() => {
+      // de quel côté part l'embranchement ?
+      const q = b.pts[Math.min(b.n - 1, Math.round(b.n * 0.3))];
+      const r = this.nearestOn(m, q.x, q.z);
+      return Math.sign(r.lateral) || 1;
+    })();
+    const p = this.pointAt(m, i, side * (m.half + 3));
+    const label = b.kind === 'shortcut' ? 'RACCOURCI' : 'ROUTE HAUTE';
+    const tex = canvasTex(256, 96, (g, w, h) => {
+      g.fillStyle = b.kind === 'shortcut' ? '#2e7d32' : '#1565c0'; g.fillRect(0, 0, w, h);
+      g.strokeStyle = '#fff'; g.lineWidth = 6; g.strokeRect(5, 5, w - 10, h - 10);
+      g.fillStyle = '#fff'; g.font = 'bold 34px sans-serif'; g.textAlign = 'center'; g.textBaseline = 'middle';
+      const arrow = side > 0 ? '➜' : '⬅';
+      g.fillText(side > 0 ? `${label} ${arrow}` : `${arrow} ${label}`, w / 2, h / 2 + 2);
+    }, false);
+    const sign = new THREE.Group();
+    const board = new THREE.Mesh(new THREE.BoxGeometry(5, 1.9, 0.2), [
+      new THREE.MeshLambertMaterial({ color: '#555' }), new THREE.MeshLambertMaterial({ color: '#555' }),
+      new THREE.MeshLambertMaterial({ color: '#555' }), new THREE.MeshLambertMaterial({ color: '#555' }),
+      new THREE.MeshLambertMaterial({ map: tex, emissive: this.theme.night ? '#ffffff' : '#000000', emissiveMap: tex, emissiveIntensity: 0.5 }),
+      new THREE.MeshLambertMaterial({ color: '#555' }),
+    ]);
+    board.position.y = 3.6;
+    sign.add(board);
+    const post = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.12, 3, 6), new THREE.MeshLambertMaterial({ color: '#777' }));
+    post.position.y = 1.5;
+    sign.add(post);
+    sign.position.set(p.x, p.y, p.z);
+    // face aux pilotes qui arrivent
+    sign.rotation.y = this.headingAt(m, i) + Math.PI;
+    this.group.add(sign);
+  }
+
+  // Distance au bord le plus proche, exprimée comme si tous les chemins avaient la largeur de la boucle principale
   distToTrack(x, z) {
     let best = Infinity;
-    for (let i = 0; i < this.n; i += 2) {
-      const p = this.pts[i];
-      const d = (p.x - x) ** 2 + (p.z - z) ** 2;
-      if (d < best) best = d;
+    for (const path of this.paths) {
+      let d2 = Infinity;
+      for (let i = 0; i < path.n; i += 2) {
+        const p = path.pts[i];
+        d2 = Math.min(d2, (p.x - x) ** 2 + (p.z - z) ** 2);
+      }
+      best = Math.min(best, Math.sqrt(d2) - (path.wallDist - this.wallDist));
     }
-    return Math.sqrt(best);
+    return best;
   }
 
   buildScenery() {
@@ -333,8 +511,8 @@ export class Track {
     if (th.scenery.lamp) {
       for (let i = 0; i < this.n; i += Math.round(36 / this.spacing)) {
         const side = (i / Math.round(36 / this.spacing)) % 2 ? 1 : -1;
-        const p = this.pointAt(i, side * (this.wallDist + 1.5));
-        place('lamp', p.x, p.z, 1, 0);
+        const p = this.pointAt(this.main, i, side * (this.wallDist - 0.8));
+        place('lamp', p.x, p.z, 1, 0, p.y);
       }
     }
 
@@ -354,21 +532,36 @@ export class Track {
     }
   }
 
+  inZone(i) {
+    return this.branches.some((b) => i > b.startIdx - 15 && i < b.endIdx + 15)
+      || this.main.ramps.some((rp) => this.wrap(i - rp.from + 10) < rp.to - rp.from + 20);
+  }
+
+  freeIndex(f) {
+    let i = Math.round(f * this.n);
+    for (let k = 0; k < this.n && this.inZone(i); k++) i = this.wrap(i + 1);
+    return i;
+  }
+
+  addBoxRow(path, i, count, spread) {
+    const tex = this.boxTex || (this.boxTex = itemBoxTexture());
+    const mat = this.boxMat || (this.boxMat = new THREE.MeshLambertMaterial({ map: tex, transparent: true, opacity: 0.92, emissive: '#555', emissiveMap: tex }));
+    const geom = this.boxGeom || (this.boxGeom = new THREE.BoxGeometry(1.6, 1.6, 1.6));
+    for (let k = 0; k < count; k++) {
+      const lat = (k - (count - 1) / 2) * spread;
+      const p = this.pointAt(path, i, lat);
+      const mesh = new THREE.Mesh(geom, mat);
+      mesh.position.set(p.x, p.y + 1.3, p.z);
+      mesh.rotation.set(0.5, k, 0.5);
+      this.group.add(mesh);
+      this.itemBoxes.push({ x: p.x, y: p.y, z: p.z, path, i, lateral: lat, mesh, respawn: 0 });
+    }
+  }
+
   buildItemBoxes() {
-    const tex = itemBoxTexture();
-    const mat = new THREE.MeshLambertMaterial({ map: tex, transparent: true, opacity: 0.92, emissive: '#555', emissiveMap: tex });
-    const geom = new THREE.BoxGeometry(1.6, 1.6, 1.6);
-    for (const f of [0.17, 0.48, 0.79]) {
-      const idx = Math.round(f * this.n);
-      for (let k = 0; k < 5; k++) {
-        const lat = (k - 2) * (this.half * 0.38);
-        const p = this.pointAt(idx, lat);
-        const mesh = new THREE.Mesh(geom, mat);
-        mesh.position.set(p.x, 1.3, p.z);
-        mesh.rotation.set(0.5, k, 0.5);
-        this.group.add(mesh);
-        this.itemBoxes.push({ x: p.x, z: p.z, mesh, respawn: 0 });
-      }
+    for (const f of [0.17, 0.48, 0.79]) this.addBoxRow(this.main, this.freeIndex(f), 5, this.half * 0.38);
+    for (const b of this.branches) {
+      if (b.kind === 'alt') this.addBoxRow(b, Math.round(b.n * 0.5), 3, b.half * 0.55);
     }
   }
 
@@ -383,18 +576,20 @@ export class Track {
         g.fill();
       }
     }, false);
-    tex.center.set(0.5, 0.5);
-    const mat = new THREE.MeshBasicMaterial({ map: tex });
-    for (const f of [0.33, 0.63, 0.92]) {
-      const idx = Math.round(f * this.n);
-      const lat = (this.rand() - 0.5) * this.half;
-      const p = this.pointAt(idx, lat);
-      const pad = new THREE.Mesh(new THREE.PlaneGeometry(4, 5), mat);
-      pad.rotation.x = -Math.PI / 2;
-      pad.rotation.z = this.headingAt(idx) + Math.PI;
-      pad.position.set(p.x, 0.13, p.z);
-      this.group.add(pad);
-      this.boostPads.push({ x: p.x, z: p.z, idx, heading: this.headingAt(idx) });
+    const mat = new THREE.MeshBasicMaterial({ map: tex, polygonOffset: true, polygonOffsetFactor: -4 });
+    const pad = (path, i, lat) => {
+      const p = this.pointAt(path, i, lat);
+      const mesh = new THREE.Mesh(new THREE.PlaneGeometry(4, 5), mat);
+      mesh.rotation.x = -Math.PI / 2;
+      mesh.rotation.z = this.headingAt(path, i) + Math.PI;
+      mesh.position.set(p.x, p.y + 0.13, p.z);
+      this.group.add(mesh);
+      this.boostPads.push({ x: p.x, y: p.y, z: p.z, path, i, lateral: lat });
+    };
+    for (const f of [0.33, 0.63, 0.92]) pad(this.main, this.freeIndex(f), (this.rand() - 0.5) * this.half);
+    // élan avant le tremplin du raccourci
+    for (const b of this.branches) {
+      if (b.kind === 'shortcut' && b.ramps[0]) pad(b, b.ramps[0].from - 4, 0);
     }
   }
 
@@ -407,7 +602,7 @@ export class Track {
       if (b.mesh.visible) {
         b.mesh.rotation.y += dt * 1.5;
         b.mesh.rotation.x += dt * 0.7;
-        b.mesh.position.y = 1.3 + Math.sin(time * 2 + b.x) * 0.2;
+        b.mesh.position.y = b.y + 1.3 + Math.sin(time * 2 + b.x) * 0.2;
         const sc = Math.min(1, b.mesh.scale.x + dt * 2);
         b.mesh.scale.setScalar(sc);
       }

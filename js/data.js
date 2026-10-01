@@ -100,18 +100,18 @@ export const THEMES = {
 
 // Circuits générés par une courbe polaire : r(θ) = R * (1 + Σ a·sin(kθ + φ)).
 export const TRACKS = {
-  collines:   { name: 'Prairie des Collines', theme: 'prairie', R: 120, sx: 1.4, sz: 0.9, width: 17, harm: [[2, 0.288, 0.3], [3, 0.192, 1.2]] },
-  corail:     { name: 'Plage Corail',         theme: 'plage',   R: 132, sx: 1.2, sz: 1.0, width: 17, harm: [[2, 0.306, 2], [3, 0.357, 0.4], [5, 0.102, 1]] },
-  rousse:     { name: 'Forêt Rousse',         theme: 'automne', R: 128, sx: 1.0, sz: 1.15, width: 16, harm: [[3, 0.27, 0], [4, 0.095, 2.1]] },
-  poussiere:  { name: 'Canyon Poussière',     theme: 'desert',  R: 140, sx: 1.3, sz: 0.85, width: 16, harm: [[2, 0.35, 1.4], [4, 0.175, 0.5], [5, 0.07, 2.5]] },
-  givre:      { name: 'Sommet Givré',         theme: 'neige',   R: 132, sx: 1.1, sz: 1.1, width: 16, harm: [[3, 0.23, 0.9], [5, 0.081, 0.2]] },
-  lagune:     { name: 'Lagune Tropicale',     theme: 'plage',   R: 144, sx: 1.35, sz: 0.95, width: 16, harm: [[2, 0.205, 0], [4, 0.267, 1.3], [6, 0.062, 0]] },
-  neon:       { name: 'Ville Néon',           theme: 'ville',   R: 136, sx: 1.2, sz: 1.0, width: 16, harm: [[4, 0.217, 0.7], [2, 0.155, 2.4]] },
-  cratere:    { name: 'Cratère Ardent',       theme: 'volcan',  R: 140, sx: 1.0, sz: 1.2, width: 15, harm: [[3, 0.225, 2], [5, 0.105, 0.6], [2, 0.12, 1]] },
-  infini:     { name: 'Désert Infini',        theme: 'desert',  R: 160, sx: 1.5, sz: 0.8, width: 16, harm: [[2, 0.225, 0.2], [3, 0.18, 2.2], [6, 0.038, 1.1]] },
-  glacier:    { name: 'Glacier Éternel',      theme: 'neige',   R: 152, sx: 1.25, sz: 1.0, width: 15, harm: [[4, 0.176, 0.4], [3, 0.135, 1.6], [6, 0.041, 0]] },
-  metropole:  { name: 'Métropole Nocturne',   theme: 'ville',   R: 156, sx: 1.1, sz: 1.15, width: 15, harm: [[5, 0.152, 1], [3, 0.266, 0.2], [2, 0.152, 2.7]] },
-  arcenciel:  { name: 'Route Arc-en-ciel',    theme: 'espace',  R: 168, sx: 1.3, sz: 1.0, width: 15, harm: [[3, 0.224, 1.1], [5, 0.098, 2.4], [7, 0.028, 0.5]] },
+  collines:   { name: 'Prairie des Collines', theme: 'prairie', R: 120, sx: 1.4, sz: 0.9, width: 17, relief: 10, harm: [[2, 0.288, 0.3], [3, 0.192, 1.2]] },
+  corail:     { name: 'Plage Corail',         theme: 'plage',   R: 132, sx: 1.2, sz: 1.0, width: 17, relief: 5, harm: [[2, 0.306, 2], [3, 0.357, 0.4], [5, 0.102, 1]] },
+  rousse:     { name: 'Forêt Rousse',         theme: 'automne', R: 128, sx: 1.0, sz: 1.15, width: 16, relief: 10, harm: [[3, 0.27, 0], [4, 0.095, 2.1]] },
+  poussiere:  { name: 'Canyon Poussière',     theme: 'desert',  R: 140, sx: 1.3, sz: 0.85, width: 16, relief: 12, harm: [[2, 0.35, 1.4], [4, 0.175, 0.5], [5, 0.07, 2.5]] },
+  givre:      { name: 'Sommet Givré',         theme: 'neige',   R: 132, sx: 1.1, sz: 1.1, width: 16, relief: 16, harm: [[3, 0.23, 0.9], [5, 0.081, 0.2]] },
+  lagune:     { name: 'Lagune Tropicale',     theme: 'plage',   R: 144, sx: 1.35, sz: 0.95, width: 16, relief: 6, harm: [[2, 0.205, 0], [4, 0.267, 1.3], [6, 0.062, 0]] },
+  neon:       { name: 'Ville Néon',           theme: 'ville',   R: 136, sx: 1.2, sz: 1.0, width: 16, relief: 10, harm: [[4, 0.217, 0.7], [2, 0.155, 2.4]] },
+  cratere:    { name: 'Cratère Ardent',       theme: 'volcan',  R: 140, sx: 1.0, sz: 1.2, width: 15, relief: 14, harm: [[3, 0.225, 2], [5, 0.105, 0.6], [2, 0.12, 1]] },
+  infini:     { name: 'Désert Infini',        theme: 'desert',  R: 160, sx: 1.5, sz: 0.8, width: 16, relief: 12, harm: [[2, 0.225, 0.2], [3, 0.18, 2.2], [6, 0.038, 1.1]] },
+  glacier:    { name: 'Glacier Éternel',      theme: 'neige',   R: 152, sx: 1.25, sz: 1.0, width: 15, relief: 15, harm: [[4, 0.176, 0.4], [3, 0.135, 1.6], [6, 0.041, 0]] },
+  metropole:  { name: 'Métropole Nocturne',   theme: 'ville',   R: 156, sx: 1.1, sz: 1.15, width: 15, relief: 10, harm: [[5, 0.152, 1], [3, 0.266, 0.2], [2, 0.152, 2.7]] },
+  arcenciel:  { name: 'Route Arc-en-ciel',    theme: 'espace',  R: 168, sx: 1.3, sz: 1.0, width: 15, relief: 18, harm: [[3, 0.224, 1.1], [5, 0.098, 2.4], [7, 0.028, 0.5]] },
 };
 
 export const CUPS = [

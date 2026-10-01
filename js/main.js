@@ -54,9 +54,9 @@ function buildMenuScene(trackId) {
   for (let i = 0; i < 6; i++) {
     const m = buildKartModel(KARTS[i % KARTS.length].shape, BOTS[i].color);
     const idx = track.n - 6 - Math.floor(i / 2) * 4;
-    const p = track.pointAt(idx, (i % 2 ? 1 : -1) * track.half * 0.45);
-    m.position.set(p.x, 0.1, p.z);
-    m.rotation.y = track.headingAt(idx);
+    const p = track.pointAt(track.main, idx, (i % 2 ? 1 : -1) * track.half * 0.45);
+    m.position.set(p.x, p.y + 0.1, p.z);
+    m.rotation.y = track.headingAt(track.main, idx);
     menu.scene.add(m);
   }
   menu.track = track;

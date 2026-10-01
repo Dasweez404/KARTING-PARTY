@@ -72,6 +72,7 @@ export class Audio {
       case 'drift': this.tone(150, 0.08, { type: 'triangle', vol: 0.15 * vol }); break;
       case 'hit': this.tone(500, 0.5, { type: 'square', vol: 0.2 * vol, slide: 80 }); break;
       case 'shieldBreak': this.tone(1500, 0.3, { type: 'triangle', vol: 0.2 * vol, slide: 300 }); break;
+      case 'land': this.noiseBurst(0.18, { vol: 0.3 * vol, freq: 400 }); this.tone(120, 0.15, { type: 'sine', vol: 0.3 * vol, slide: 60 }); break;
       case 'wall': this.noiseBurst(0.12, { vol: 0.25 * vol, freq: 600 }); break;
       case 'explosion': this.noiseBurst(0.7, { vol: 0.6 * vol, freq: 900 }); this.tone(90, 0.5, { type: 'sine', vol: 0.4 * vol, slide: 30 }); break;
       case 'drop': this.tone(300, 0.12, { type: 'triangle', vol: 0.2 * vol, slide: 150 }); break;

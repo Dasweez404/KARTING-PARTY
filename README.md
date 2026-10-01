@@ -33,6 +33,8 @@ Les manettes et les écrans tactiles (boutons à l'écran) sont aussi supportés
 - **5 karts** avec des stats différentes (vitesse, accélération, maniabilité, poids) : Équilibré, Plume, Bolide, Mastodonte, Drifteur, et 10 couleurs.
 - **7 gadgets** : Turbo, Triple turbo, Banane, Mine, Missile à tête chercheuse, Bouclier, Éclair. Plus tu es loin dans le classement, meilleurs sont les objets.
 - **12 circuits** dans **8 décors** : prairie, plage, désert, neige, forêt d'automne, volcan, ville néon, espace arc-en-ciel.
+- **Relief** : collines jusqu'à 20 m de dénivelé, routes en remblai, tremplins pour sauter.
+- **Plusieurs routes** sur chaque circuit : un **raccourci** en terre, étroit et avec un tremplin, qui coupe un virage, et une **route haute** sur pont quand la route se divise en deux. Des panneaux annoncent chaque embranchement, et la mini-carte les affiche en couleur.
 - **4 championnats** de 3 courses (barème 15-12-10-8-6-4-2-1), en 50cc, 100cc ou 150cc, avec podium final et trophées sauvegardés.
 - **Course libre** sur n'importe quel circuit, avec record par circuit.
 - Bots qui suivent la trajectoire, freinent dans les virages, dérapent, évitent les pièges et utilisent leurs objets.
@@ -44,7 +46,7 @@ Les manettes et les écrans tactiles (boutons à l'écran) sont aussi supportés
 index.html        écrans et HUD
 css/style.css     interface
 js/data.js        karts, objets, décors, circuits, coupes
-js/shape.js       génération de la ligne centrale des circuits
+js/shape.js       génération du réseau de routes : boucle, relief, embranchements, tremplins
 js/track.js       construction 3D du circuit et du décor
 js/kart.js        modèle 3D et physique des karts
 js/items.js       boîtes d'objets, pièges, missiles
@@ -52,5 +54,5 @@ js/ai.js          pilotage des bots
 js/race.js        déroulement d'une course, caméra, HUD
 js/main.js        menus, championnats, boucle principale
 vendor/           Three.js r169 (licence MIT)
-tests/            vérification que les circuits ne se chevauchent pas
+tests/            vérification des circuits : pas de chevauchement, embranchements, pentes
 ```

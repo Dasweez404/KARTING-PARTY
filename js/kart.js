@@ -103,7 +103,8 @@ export class Kart {
     this.weight = 0.5 + s.weight;
     this.driftBonus = kartDef.driftBonus || 1;
 
-    this.x = 0; this.z = 0; this.heading = 0; this.speed = 0;
+    this.x = 0; this.z = 0; this.y = 0; this.vy = 0; this.heading = 0; this.speed = 0;
+    this.airborne = false; this.loc = null; this.ground = 0; this.pitch = 0;
     this.idx = -1; this.lap = 0; this.checkpoint = true; this.progress = 0;
     this.lateral = 0; this.offroad = false;
     this.finished = false; this.finishTime = 0; this.rank = 0;
@@ -156,8 +157,8 @@ export class Kart {
     if (!isPlayer) this.mesh.add(nameSprite(name, color));
   }
 
-  place(x, z, heading) {
-    this.x = x; this.z = z; this.heading = heading;
+  place(x, z, heading, y = 0) {
+    this.x = x; this.z = z; this.heading = heading; this.y = y; this.ground = y;
     this.syncMesh(0);
   }
 
@@ -191,7 +192,6 @@ export class Kart {
   }
 
   update(dt, input, track, raceTime) {
-    const half = track.half;
     // Timers
     this.invuln = Math.max(0, this.invuln - dt);
     this.shieldTime = Math.max(0, this.shieldTime - dt);
@@ -202,7 +202,8 @@ export class Kart {
 
     // Vitesse maximale du moment
     let vmax = this.maxSpeed * this.rubber;
-    this.offroad = Math.abs(this.lateral) > half + 1.4;
+    const curPath = this.loc ? this.loc.path : track.main;
+    this.offroad = Math.abs(this.lateral) > curPath.half + (curPath === track.main ? 1.4 : 0.8);
     if (this.offroad && this.boostTime <= 0) vmax *= 0.5;
     if (this.shrinkTime > 0) vmax *= 0.65;
     if (this.boostTime > 0) vmax *= 1.38;
@@ -212,7 +213,9 @@ export class Kart {
       steer = (input.left ? 1 : 0) - (input.right ? 1 : 0);
       if (input.steer !== undefined) steer = input.steer;
       // Accélération
-      if (input.up || this.boostTime > 0) {
+      if (this.airborne) {
+        this.speed -= Math.sign(this.speed) * Math.min(Math.abs(this.speed), 1.5 * dt);
+      } else if (input.up || this.boostTime > 0) {
         const a = this.boostTime > 0 ? this.accel * 2.5 : this.accel;
         if (this.speed < vmax) this.speed += a * dt * (1 - 0.55 * Math.max(0, this.speed) / vmax);
       } else if (input.down) {
@@ -225,7 +228,7 @@ export class Kart {
 
       // Dérapage
       const driftPressed = input.drift && !this.prevDrift;
-      if (!this.drifting && input.drift && steer !== 0 && this.speed > 11 && this.hopY <= 0.01 && (driftPressed || this.prevDrift)) {
+      if (!this.drifting && input.drift && steer !== 0 && this.speed > 11 && this.hopY <= 0.01 && !this.airborne && (driftPressed || this.prevDrift)) {
         this.drifting = true; this.driftDir = Math.sign(steer); this.driftCharge = 0;
         this.hopV = 4.5;
         this.events.push('drift');
@@ -238,11 +241,13 @@ export class Kart {
       this.prevDrift = !!input.drift;
 
       // Direction
-      const sf = Math.min(1, Math.abs(this.speed) / 9) * Math.sign(this.speed || 1) * (1 - Math.min(0.25, Math.abs(this.speed) / 160));
+      let sf = Math.min(1, Math.abs(this.speed) / 9) * Math.sign(this.speed || 1) * (1 - Math.min(0.25, Math.abs(this.speed) / 160));
+      if (this.airborne) sf *= 0.4;
       if (this.drifting) {
-        const k = 0.8 + 0.5 * steer * this.driftDir;
-        this.heading += this.driftDir * this.turnRate * k * 1.12 * sf * dt;
-        this.driftCharge += dt * (0.7 + 0.6 * Math.max(0, steer * this.driftDir)) * this.driftBonus * (this.offroad ? 0.3 : 1);
+        // Dérapage : virage modéré, dosé avec la direction (0.2 en contre-braquant, 0.95 en braquant à fond)
+        const k = 0.575 + 0.375 * steer * this.driftDir;
+        this.heading += this.driftDir * this.turnRate * k * sf * dt;
+        if (!this.airborne) this.driftCharge += dt * (0.7 + 0.6 * Math.max(0, steer * this.driftDir)) * this.driftBonus * (this.offroad ? 0.3 : 1);
       } else {
         this.heading += steer * this.turnRate * sf * dt;
       }
@@ -253,45 +258,85 @@ export class Kart {
     }
 
     // Déplacement
+    const px = this.x, pz = this.z;
     let mx = Math.sin(this.heading) * this.speed * dt;
     let mz = Math.cos(this.heading) * this.speed * dt;
     if (this.drifting) {
-      // léger glissement vers l'extérieur du virage
+      // glissement vers l'extérieur du virage
       const rx = -Math.cos(this.heading), rz = Math.sin(this.heading);
-      const slide = this.driftDir * this.speed * 0.12 * dt;
+      const slide = this.driftDir * this.speed * 0.16 * dt;
       mx += rx * slide; mz += rz * slide;
     }
     this.x += mx; this.z += mz;
 
-    // Saut / gravité
+    // Petit saut visuel (dérapage, coups)
     this.hopV -= 30 * dt;
     this.hopY = Math.max(0, this.hopY + this.hopV * dt);
     if (this.hopY === 0 && this.hopV < 0) this.hopV = 0;
 
-    // Position sur la piste
-    const prevIdx = this.idx;
-    const near = track.nearest(this.x, this.z, this.idx);
-    this.idx = near.idx;
-    this.lateral = near.lateral;
+    // Position dans le réseau de routes
+    let loc = track.locate(this.x, this.z, this.y, this.loc);
+    // Face abrupte (arrière d'un tremplin) : on la traite comme un mur
+    if (loc.ground - this.y > 1.0 && this.loc) {
+      this.x = px; this.z = pz;
+      this.speed *= -0.3;
+      loc = track.locate(this.x, this.z, this.y, this.loc);
+    }
     // Murs
-    const lim = track.wallDist - 1.0;
-    if (Math.abs(this.lateral) > lim) {
-      const nm = track.normals[this.idx];
-      const over = Math.abs(this.lateral) - lim;
-      const sgn = Math.sign(this.lateral);
+    const path = loc.path;
+    const lim = path.wallDist - 1.0;
+    if (!loc.inside && Math.abs(loc.lateral) > lim) {
+      const k = loc.i, nm = path.normals[k];
+      const over = Math.abs(loc.lateral) - lim;
+      const sgn = Math.sign(loc.lateral);
       this.x -= nm.x * over * sgn; this.z -= nm.z * over * sgn;
-      this.lateral = sgn * lim;
+      loc.lateral = sgn * lim;
       if (Math.abs(this.speed) > 6) this.events.push('wall');
       this.speed *= 0.75;
       // réaligne doucement la direction sur la piste
-      const th = track.headingAt(this.idx);
-      let d = th - this.heading;
+      let d = track.headingAt(path, k) - this.heading;
       while (d > Math.PI) d -= Math.PI * 2;
       while (d < -Math.PI) d += Math.PI * 2;
       if (Math.abs(d) < Math.PI / 2) this.heading += d * 0.15;
     }
-    // Tours
+    this.loc = loc;
+    this.lateral = loc.lateral;
+    this.ground = loc.ground;
+
+    // Gravité, tremplins et bosses
+    const G = 28;
+    const prevGround = this.prevGround ?? loc.ground;
+    this.prevGround = loc.ground;
+    if (this.airborne) {
+      this.vy -= G * dt;
+      this.y += this.vy * dt;
+      if (this.y <= loc.ground) {
+        if (this.vy < -7) this.events.push('land');
+        this.y = loc.ground;
+        this.airborne = false;
+        this.vy = Math.max(-14, Math.min(14, (loc.ground - prevGround) / dt));
+      }
+    } else {
+      const groundRate = (loc.ground - this.y) / dt;
+      // seul un vrai rebord (le sol plonge d'un coup) fait décoller, pas une simple descente
+      if (this.vy - groundRate > 4 && Math.abs(this.speed) > 8) {
+        // le sol se dérobe : décollage !
+        this.airborne = true;
+        this.vy -= G * dt;
+        this.y += this.vy * dt;
+        if (this.y <= loc.ground) { this.y = loc.ground; this.airborne = false; }
+      } else {
+        // une petite marche (changement de route) ne doit pas créer de vitesse verticale parasite
+        const cap = Math.abs(this.speed) * 0.32 + 1;
+        this.vy = Math.abs(groundRate) > cap ? 0 : groundRate;
+        this.y = loc.ground;
+      }
+    }
+
+    // Tours (sur l'indice de la boucle principale)
     const n = track.n;
+    const prevIdx = this.idx;
+    this.idx = Math.floor(loc.mainIdx) % n;
     if (prevIdx >= 0) {
       if (this.idx > n * 0.45 && this.idx < n * 0.55) this.checkpoint = true;
       if (prevIdx > n * 0.75 && this.idx < n * 0.25 && this.checkpoint) {
@@ -303,20 +348,22 @@ export class Kart {
         this.checkpoint = true;
       }
     }
-    this.progress = this.lap + this.idx / n;
+    this.progress = this.lap + loc.mainIdx / n;
 
     this.syncMesh(dt, steer, raceTime);
   }
 
   syncMesh(dt, steer = 0, time = 0) {
-    this.mesh.position.set(this.x, 0, this.z);
+    this.mesh.position.set(this.x, this.y, this.z);
     this.mesh.rotation.y = this.heading;
+    const targetPitch = -Math.atan2(this.vy, Math.max(4, Math.abs(this.speed)));
+    this.pitch += (targetPitch - this.pitch) * Math.min(1, dt * (this.airborne ? 3 : 10));
     const v = this.visual;
-    const targetSlide = this.drifting ? this.driftDir * 0.45 : 0;
+    const targetSlide = this.drifting ? this.driftDir * 0.38 : 0;
     this.slideYaw += (targetSlide - this.slideYaw) * Math.min(1, dt * 8);
-    let yaw = this.slideYaw, roll = 0, pitch = 0;
+    let yaw = this.slideYaw, roll = this.drifting ? -this.driftDir * 0.06 : 0, pitch = this.pitch;
     if (this.spinTime > 0) yaw += this.spinTime * 14;
-    if (this.flipTime > 0) pitch = (1.4 - this.flipTime) / 1.4 * Math.PI * 2;
+    if (this.flipTime > 0) pitch += (1.4 - this.flipTime) / 1.4 * Math.PI * 2;
     v.rotation.set(pitch, yaw, roll);
     v.position.y = this.hopY + 0.12;
     const sc = this.shrinkTime > 0 ? 0.55 : 1;

@@ -53,10 +53,12 @@ export class Race {
       const row = Math.floor(i / 2);
       const idx = this.track.n - 5 - row * Math.round(7 / this.track.spacing);
       const lat = (i % 2 ? 1 : -1) * this.track.half * 0.45;
-      const p = this.track.pointAt(idx, lat);
-      kart.place(p.x, p.z, this.track.headingAt(idx));
+      const main = this.track.main;
+      const p = this.track.pointAt(main, idx, lat);
+      kart.place(p.x, p.z, this.track.headingAt(main, idx), p.y);
       kart.idx = idx; kart.lap = 0; kart.progress = idx / this.track.n;
       kart.lateral = lat;
+      kart.loc = this.track.locate(p.x, p.z, p.y);
       scene.add(kart.mesh);
       this.karts.push(kart);
       if (cfg.isPlayer) this.player = kart;
@@ -102,16 +104,21 @@ export class Race {
     bg.width = bg.height = size;
     const g = bg.getContext('2d');
     g.lineCap = 'round'; g.lineJoin = 'round';
-    const path = () => {
+    const trace = (path) => {
       g.beginPath();
-      this.track.pts.forEach((p, i) => {
+      path.pts.forEach((p, i) => {
         const x = size / 2 + p.x * this.mapScale, y = size / 2 + p.z * this.mapScale;
         if (i === 0) g.moveTo(x, y); else g.lineTo(x, y);
       });
-      g.closePath();
+      if (path.closed) g.closePath();
     };
-    path(); g.strokeStyle = 'rgba(0,0,0,0.55)'; g.lineWidth = 10; g.stroke();
-    path(); g.strokeStyle = 'rgba(255,255,255,0.9)'; g.lineWidth = 5; g.stroke();
+    for (const path of this.track.paths) { trace(path); g.strokeStyle = 'rgba(0,0,0,0.55)'; g.lineWidth = path.closed ? 10 : 7; g.stroke(); }
+    for (const path of this.track.paths) {
+      trace(path);
+      g.strokeStyle = path.kind === 'shortcut' ? 'rgba(255,214,120,0.95)' : path.kind === 'alt' ? 'rgba(140,200,255,0.95)' : 'rgba(255,255,255,0.9)';
+      g.lineWidth = path.closed ? 5 : 3.5;
+      g.stroke();
+    }
     const s = this.track.pts[0];
     g.fillStyle = '#ffeb3b';
     g.fillRect(size / 2 + s.x * this.mapScale - 3, size / 2 + s.z * this.mapScale - 3, 6, 6);
@@ -364,15 +371,22 @@ export class Race {
       const u = Math.max(0, (this.countdown - 1.2) / 2.8);
       const ang = p.heading + Math.PI * u * 1.2;
       const dist = 7.5 + u * 10;
-      desired = new THREE.Vector3(p.x - Math.sin(ang) * dist, 3.2 + u * 6, p.z - Math.cos(ang) * dist);
-      look = new THREE.Vector3(p.x, 1.2, p.z);
+      desired = new THREE.Vector3(p.x - Math.sin(ang) * dist, p.y + 3.2 + u * 6, p.z - Math.cos(ang) * dist);
+      look = new THREE.Vector3(p.x, p.y + 1.2, p.z);
       this.camPos.copy(desired); this.camLook.copy(look);
     } else {
       const back = 7.5 + Math.max(0, p.speed) * 0.04;
-      desired = new THREE.Vector3(p.x - fwdX * back, 3.8, p.z - fwdZ * back);
-      look = new THREE.Vector3(p.x + fwdX * 5, 1.3, p.z + fwdZ * 5);
+      // en l'air, la caméra suit le sol plutôt que le kart pour accentuer le saut
+      const baseY = p.airborne ? Math.max(p.ground, p.y - 2) : p.y;
+      desired = new THREE.Vector3(p.x - fwdX * back, baseY + 3.8, p.z - fwdZ * back);
+      look = new THREE.Vector3(p.x + fwdX * 5, p.y + 1.3, p.z + fwdZ * 5);
       const a = 1 - Math.exp(-dt * 7);
+      const camY = this.camPos.y;
       this.camPos.lerp(desired, a);
+      this.camPos.y = camY + (desired.y - camY) * (1 - Math.exp(-dt * 5));
+      // ne jamais passer sous la route
+      const under = this.track.locate(this.camPos.x, this.camPos.z, undefined, p.loc);
+      this.camPos.y = Math.max(this.camPos.y, under.ground + 1.5);
       this.camLook.lerp(look, 1 - Math.exp(-dt * 12));
     }
     this.camera.position.copy(this.camPos);
@@ -386,8 +400,8 @@ export class Race {
     this.camera.fov += (fov - this.camera.fov) * Math.min(1, dt * 4);
     this.camera.updateProjectionMatrix();
     // ombre centrée sur le joueur
-    this.sun.position.set(p.x + 40, 80, p.z + 25);
-    this.sun.target.position.set(p.x, 0, p.z);
+    this.sun.position.set(p.x + 40, p.y + 80, p.z + 25);
+    this.sun.target.position.set(p.x, p.y, p.z);
   }
 
   resize() {

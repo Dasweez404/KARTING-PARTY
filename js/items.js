@@ -93,10 +93,10 @@ export class ItemSystem {
       }
       for (const b of track.itemBoxes) {
         if (!b.mesh.visible) continue;
-        if ((b.x - k.x) ** 2 + (b.z - k.z) ** 2 < 2.6 ** 2) {
+        if ((b.x - k.x) ** 2 + (b.z - k.z) ** 2 < 2.6 ** 2 && Math.abs(b.y + 1 - k.y) < 3) {
           b.mesh.visible = false;
           b.respawn = 2.5;
-          this.burst(b.x, 1.3, b.z, '#ffffff', 0.6);
+          this.burst(b.x, b.y + 1.3, b.z, '#ffffff', 0.6);
           if (!k.item && k.roulette <= 0) {
             k.pendingItem = rollItem(k.rank || karts.length, karts.length);
             k.roulette = k.isPlayer ? 1.2 : 0.8;
@@ -106,7 +106,7 @@ export class ItemSystem {
       }
       // Pads de turbo
       for (const p of track.boostPads) {
-        if ((p.x - k.x) ** 2 + (p.z - k.z) ** 2 < 2.8 ** 2 && k.boostTime < 0.9) k.boost(1.1);
+        if ((p.x - k.x) ** 2 + (p.z - k.z) ** 2 < 2.8 ** 2 && Math.abs(p.y - k.y) < 1.5 && k.boostTime < 0.9) k.boost(1.1);
       }
     }
 
@@ -118,20 +118,14 @@ export class ItemSystem {
         t.mesh.userData.light.visible = Math.floor(time * 4) % 2 === 0;
         t.mesh.rotation.y += dt;
       }
-      // petite glissade après le lâcher
-      if (t.vel > 0) {
-        t.x += Math.sin(t.heading) * t.vel * dt; t.z += Math.cos(t.heading) * t.vel * dt;
-        t.vel = Math.max(0, t.vel - 30 * dt);
-        t.mesh.position.set(t.x, 0, t.z);
-      }
       const r = t.type === 'mine' ? 2.4 : 1.9;
       for (const k of karts) {
         if (k === t.owner && t.age < 1.0) continue;
-        if (k.hopY > 1.2) continue;
+        if (k.hopY > 1.2 || Math.abs(k.y - t.y) > 1.5) continue;
         if ((t.x - k.x) ** 2 + (t.z - k.z) ** 2 < r * r) {
           const landed = k.hit(t.type === 'mine' ? 'flip' : 'spin');
-          if (t.type === 'mine') this.explosion(t.x, t.z);
-          else this.burst(t.x, 0.6, t.z, '#ffd600', 0.8);
+          if (t.type === 'mine') this.explosion(t.x, t.y, t.z);
+          else this.burst(t.x, t.y + 0.6, t.z, '#ffd600', 0.8);
           if (landed) this.race.onHit(k, t.owner, t.type);
           this.removeTrap(i);
           break;
@@ -145,12 +139,13 @@ export class ItemSystem {
       m.life -= dt;
       m.age += dt;
       let tx, tz;
-      if (m.target && !m.target.finished) {
-        const ahead = track.wrap(m.target.idx - m.idx);
-        if (ahead < 25 || ahead > track.n - 5) { tx = m.target.x; tz = m.target.z; }
-        else { const p = track.pointAt(m.idx + 14, m.target.lateral * 0.5); tx = p.x; tz = p.z; }
-      } else {
-        const p = track.pointAt(m.idx + 14, 0); tx = p.x; tz = p.z;
+      const tg = m.target;
+      const ahead = tg ? track.wrap(tg.idx - Math.floor(m.loc.mainIdx)) : Infinity;
+      if (tg && !tg.finished && (ahead < 12 || ahead > track.n - 4) && Math.abs(tg.y - m.y) < 4) { tx = tg.x; tz = tg.z; }
+      else {
+        const nx = track.advance(m.loc.path, m.loc.i, 14, (b) => !!(tg && tg.loc && tg.loc.path === b));
+        const p = track.pointAt(nx.path, nx.i, tg && tg.loc && tg.loc.path === nx.path ? tg.lateral * 0.5 : 0);
+        tx = p.x; tz = p.z;
       }
       const want = Math.atan2(tx - m.x, tz - m.z);
       let d = want - m.heading;
@@ -159,17 +154,17 @@ export class ItemSystem {
       m.heading += Math.max(-6 * dt, Math.min(6 * dt, d));
       m.x += Math.sin(m.heading) * m.speed * dt;
       m.z += Math.cos(m.heading) * m.speed * dt;
-      const near = track.nearest(m.x, m.z, m.idx);
-      m.idx = near.idx;
-      if (Math.abs(near.lateral) > track.wallDist) m.life = 0;
-      m.mesh.position.set(m.x, 0, m.z);
+      m.loc = track.locate(m.x, m.z, m.y, m.loc);
+      if (!m.loc.inside) m.life = 0;
+      m.y += (m.loc.ground - m.y) * Math.min(1, dt * 12);
+      m.mesh.position.set(m.x, m.y, m.z);
       m.mesh.rotation.y = m.heading;
       m.mesh.children[0].rotation.z += dt * 10;
       m.mesh.children[0].userData.fire.scale.setScalar(0.8 + Math.random() * 0.5);
       let done = m.life <= 0;
       for (const k of karts) {
         if (k === m.owner && m.age < 1.5) continue;
-        if ((m.x - k.x) ** 2 + (m.z - k.z) ** 2 < 2.4 ** 2) {
+        if ((m.x - k.x) ** 2 + (m.z - k.z) ** 2 < 2.4 ** 2 && Math.abs(m.y - k.y) < 3) {
           if (k.hit('flip')) this.race.onHit(k, m.owner, 'missile');
           done = true;
           break;
@@ -178,10 +173,10 @@ export class ItemSystem {
       // Les missiles détruisent les pièges
       for (let j = this.traps.length - 1; j >= 0 && !done; j--) {
         const t = this.traps[j];
-        if ((m.x - t.x) ** 2 + (m.z - t.z) ** 2 < 2 ** 2) { this.removeTrap(j); done = true; }
+        if ((m.x - t.x) ** 2 + (m.z - t.z) ** 2 < 2 ** 2 && Math.abs(m.y - t.y) < 3) { this.removeTrap(j); done = true; }
       }
       if (done) {
-        this.explosion(m.x, m.z);
+        this.explosion(m.x, m.y, m.z);
         this.scene.remove(m.mesh);
         this.missiles.splice(i, 1);
       }
@@ -210,9 +205,9 @@ export class ItemSystem {
     this.fx.push({ mesh, t: 0, dur: 0.35, size });
   }
 
-  explosion(x, z) {
-    this.burst(x, 1, z, '#ff6d00', 2.5);
-    this.burst(x, 1.5, z, '#ffd600', 1.5);
+  explosion(x, y, z) {
+    this.burst(x, y + 1, z, '#ff6d00', 2.5);
+    this.burst(x, y + 1.5, z, '#ffd600', 1.5);
     this.race.sound('explosion', x, z);
   }
 
@@ -229,10 +224,12 @@ export class ItemSystem {
       case 'banane':
       case 'mine': {
         const p = back(2.8);
+        const loc = this.track.locate(p.x, p.z, k.y, k.loc);
+        const y = loc.ground;
         const mesh = item === 'mine' ? mineMesh() : bananaMesh();
-        mesh.position.set(p.x, 0, p.z);
+        mesh.position.set(p.x, y, p.z);
         this.scene.add(mesh);
-        this.traps.push({ type: item, x: p.x, z: p.z, mesh, owner: k, age: 0, vel: 0, heading: k.heading + Math.PI });
+        this.traps.push({ type: item, x: p.x, y, z: p.z, mesh, owner: k, age: 0, loc: { path: loc.path, i: loc.i, lateral: loc.lateral } });
         if (this.traps.length > 40) this.removeTrap(0);
         this.race.sound('drop', k.x, k.z);
         break;
@@ -242,9 +239,9 @@ export class ItemSystem {
         const target = this.race.kartAhead(k);
         const m = {
           x: k.x + Math.sin(k.heading) * 2.5, z: k.z + Math.cos(k.heading) * 2.5,
-          heading: k.heading, speed: Math.max(55, k.speed + 25), idx: k.idx, target, owner: k, life: 6, age: 0, mesh,
+          y: k.y, heading: k.heading, speed: Math.max(55, k.speed + 25), loc: k.loc, target, owner: k, life: 6, age: 0, mesh,
         };
-        mesh.position.set(m.x, 0, m.z);
+        mesh.position.set(m.x, m.y, m.z);
         this.scene.add(mesh);
         this.missiles.push(m);
         this.race.sound('missile', k.x, k.z);
