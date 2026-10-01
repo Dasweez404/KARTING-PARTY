@@ -1,0 +1,175 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+  <title>Karting Party</title>
+  <meta name="description" content="Jeu de karting 3D dans le navigateur : affronte des bots, choisis ton kart, utilise des gadgets et remporte les championnats.">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🏎️</text></svg>">
+  <link rel="stylesheet" href="css/style.css">
+  <script type="importmap">{ "imports": { "three": "./vendor/three.module.min.js" } }</script>
+</head>
+<body>
+  <canvas id="game"></canvas>
+  <div id="flash"></div>
+
+  <!-- HUD de course -->
+  <div id="hud" class="hidden">
+    <div id="hud-topleft">
+      <div id="hud-pos">8<sup>e</sup></div>
+      <div id="hud-lap">Tour 1/3</div>
+    </div>
+    <div id="hud-topright">
+      <div id="hud-time">0:00.00</div>
+      <div id="hud-track"></div>
+    </div>
+    <div id="item-box"><div id="item-slot"></div><div id="item-count"></div></div>
+    <canvas id="minimap" width="180" height="180"></canvas>
+    <div id="hud-speedo"><span id="hud-speed">0</span><small>km/h</small></div>
+    <div id="drift-bar"><div id="drift-meter"></div></div>
+    <div id="countdown"></div>
+    <div id="message"></div>
+    <button id="btn-pause" class="icon-btn" aria-label="Pause">⏸</button>
+    <div id="touch-controls">
+      <div class="touch-left">
+        <button data-touch="left" aria-label="Gauche">◀</button>
+        <button data-touch="right" aria-label="Droite">▶</button>
+      </div>
+      <div class="touch-right">
+        <button data-touch="item" class="t-item" aria-label="Objet">🎁</button>
+        <button data-touch="drift" class="t-drift" aria-label="Dérapage">DRIFT</button>
+        <button data-touch="down" class="t-brake" aria-label="Frein">▼</button>
+        <button data-touch="up" class="t-gas" aria-label="Accélérer">▲</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Écran titre -->
+  <section id="screen-title" class="screen">
+    <div class="panel title-panel">
+      <h1 class="logo"><span>KARTING</span><span>PARTY</span></h1>
+      <p class="tagline">Course de karts contre des bots — gadgets, dérapages et championnats !</p>
+      <div class="menu-buttons">
+        <button class="big" data-action="mode-cup">🏆 Championnat</button>
+        <button class="big" data-action="mode-single">🏁 Course libre</button>
+        <button data-action="help">🎮 Commandes</button>
+      </div>
+      <p class="trophies" id="trophy-summary"></p>
+    </div>
+  </section>
+
+  <!-- Choix du kart -->
+  <section id="screen-kart" class="screen hidden">
+    <div class="panel wide">
+      <h2>Choisis ton kart</h2>
+      <div class="kart-layout">
+        <div class="kart-preview-wrap">
+          <canvas id="kart-preview" width="420" height="300"></canvas>
+          <div class="kart-desc" id="kart-desc"></div>
+        </div>
+        <div class="kart-options">
+          <div class="kart-list" id="kart-list"></div>
+          <div class="stats" id="kart-stats"></div>
+          <h3>Couleur</h3>
+          <div class="colors" id="color-list"></div>
+          <h3>Pseudo</h3>
+          <input id="player-name" maxlength="14" placeholder="Toi" autocomplete="off">
+        </div>
+      </div>
+      <div class="nav-row">
+        <button data-action="back-title">← Retour</button>
+        <button class="primary" data-action="kart-next">Suivant →</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- Choix de la coupe / du circuit -->
+  <section id="screen-select" class="screen hidden">
+    <div class="panel wide">
+      <h2 id="select-title">Choisis une coupe</h2>
+      <div class="difficulty" id="difficulty-list"></div>
+      <div class="cup-list" id="cup-list"></div>
+      <div class="nav-row">
+        <button data-action="back-kart">← Retour</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- Résultats -->
+  <section id="screen-results" class="screen hidden">
+    <div class="panel wide">
+      <h2 id="results-title">Résultats</h2>
+      <p id="results-sub" class="sub"></p>
+      <div class="results-grid">
+        <div>
+          <h3>Course</h3>
+          <table id="results-table"></table>
+        </div>
+        <div id="standings-wrap">
+          <h3>Classement général</h3>
+          <table id="standings-table"></table>
+        </div>
+      </div>
+      <div class="nav-row" id="results-nav"></div>
+    </div>
+  </section>
+
+  <!-- Podium final -->
+  <section id="screen-podium" class="screen hidden">
+    <div class="panel">
+      <h2 id="podium-title">Fin du championnat</h2>
+      <div class="trophy" id="podium-trophy">🏆</div>
+      <p id="podium-text" class="sub"></p>
+      <div class="podium" id="podium"></div>
+      <div class="nav-row">
+        <button class="primary" data-action="back-title">Menu principal</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- Pause -->
+  <section id="screen-pause" class="screen hidden">
+    <div class="panel">
+      <h2>Pause</h2>
+      <div class="menu-buttons">
+        <button class="big" data-action="resume">▶ Reprendre</button>
+        <button data-action="restart">↺ Recommencer la course</button>
+        <button data-action="toggle-mute" id="btn-mute">🔊 Son : activé</button>
+        <button data-action="quit">✖ Quitter</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- Commandes -->
+  <section id="screen-help" class="screen hidden">
+    <div class="panel">
+      <h2>Commandes</h2>
+      <table class="help">
+        <tr><td><kbd>↑</kbd> / <kbd>W</kbd> / <kbd>Z</kbd></td><td>Accélérer</td></tr>
+        <tr><td><kbd>↓</kbd> / <kbd>S</kbd></td><td>Freiner / marche arrière</td></tr>
+        <tr><td><kbd>←</kbd> <kbd>→</kbd> / <kbd>Q</kbd> <kbd>D</kbd> / <kbd>A</kbd></td><td>Tourner</td></tr>
+        <tr><td><kbd>Maj</kbd> / <kbd>C</kbd> (maintenir)</td><td>Déraper — relâche pour un turbo (bleu puis orange)</td></tr>
+        <tr><td><kbd>Espace</kbd> / <kbd>E</kbd></td><td>Utiliser l'objet</td></tr>
+        <tr><td><kbd>Échap</kbd> / <kbd>P</kbd></td><td>Pause</td></tr>
+        <tr><td><kbd>M</kbd></td><td>Couper le son</td></tr>
+      </table>
+      <p class="sub">Manette et écran tactile supportés. Astuce : accélère pendant le « 1 » du compte à rebours pour un départ canon !</p>
+      <h3>Gadgets</h3>
+      <ul class="items-help">
+        <li>🚀 <b>Turbo</b> — coup d'accélérateur</li>
+        <li>🔥 <b>Triple turbo</b> — trois turbos d'affilée</li>
+        <li>🍌 <b>Banane</b> — posée derrière toi, fait tourner les karts</li>
+        <li>💣 <b>Mine</b> — explose et retourne le kart qui la touche</li>
+        <li>🎯 <b>Missile</b> — fonce sur le kart juste devant toi</li>
+        <li>🛡️ <b>Bouclier</b> — protège d'une attaque pendant 10 s</li>
+        <li>⚡ <b>Éclair</b> — rapetisse tous tes adversaires</li>
+      </ul>
+      <div class="nav-row"><button class="primary" data-action="back-title">OK</button></div>
+    </div>
+  </section>
+
+  <div id="loading" class="hidden">Chargement du circuit…</div>
+  <noscript>Ce jeu nécessite JavaScript.</noscript>
+  <script type="module" src="js/main.js"></script>
+</body>
+</html>
